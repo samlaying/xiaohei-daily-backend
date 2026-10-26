@@ -1,6 +1,8 @@
-"""AI vision client — talks to Xiaomi Mimo (OpenAI-compatible)."""
+"""AI client — OpenAI 兼容 local-proxy；视觉/文本双模型。"""
 
 import logging
+import json
+import re
 from openai import OpenAI
 
 import config
@@ -17,7 +19,7 @@ def _get_client():
         _client = OpenAI(
             base_url=config.AI_BASE_URL,
             api_key=config.AI_API_KEY,
-            timeout=60,
+            timeout=120,
         )
     return _client
 
@@ -47,7 +49,7 @@ def analyze_screenshot(data_url: str, app: str = None, window_title: str = None)
 
     try:
         resp = client.chat.completions.create(
-            model=config.AI_MODEL,
+            model=config.AI_VISION_MODEL,
             messages=messages,
             max_tokens=1000,
             stream=False,
@@ -56,42 +58,48 @@ def analyze_screenshot(data_url: str, app: str = None, window_title: str = None)
         log.info("AI response: %s", content[:120])
         return {
             "summary": content,
-            "provider": "xiaomi",
-            "model": config.AI_MODEL,
+            "provider": "local-proxy",
+            "model": config.AI_VISION_MODEL,
         }
     except Exception as e:
-        log.error("AI call failed: %s", e)
+        log.error("AI vision call failed: %s", e)
         raise
 
 
-def generate_report(records_text: str, report_type: str = "daily",
-                    date_range: str = "", job_title: str = "") -> str:
-    """Generate a work report from records text."""
+def chat_text(system: str, user: str, max_tokens: int = 3000,
+              model: str = None, temperature: float = 0.3) -> str:
+    """通用文本调用（分析/生成/自检/周月报）。失败抛异常，由调用方降级。"""
     client = _get_client()
-
-    user_parts = []
-    if job_title:
-        user_parts.append(f"【岗位】{job_title}")
-    type_label = {"daily": "日报", "weekly": "周报", "monthly": "月报"}.get(report_type, report_type)
-    user_parts.append(f"【类型】{type_label}")
-    if date_range:
-        user_parts.append(f"【日期范围】{date_range}")
-    user_parts.append(f"【工作记录】\n{records_text}")
-    user_parts.append("请基于上面的记录生成一篇中文报告。")
-
     messages = [
-        {"role": "system", "content": prompts.REPORT_SYSTEM_PROMPT},
-        {"role": "user", "content": "\n\n".join(user_parts)},
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
     ]
+    resp = client.chat.completions.create(
+        model=model or config.AI_TEXT_MODEL,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        stream=False,
+    )
+    return resp.choices[0].message.content.strip()
 
-    try:
-        resp = client.chat.completions.create(
-            model=config.AI_MODEL,
-            messages=messages,
-            max_tokens=4000,
-            stream=False,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        log.error("Report generation failed: %s", e)
-        raise
+
+def extract_json(text: str) -> dict:
+    """从模型输出中鲁棒地提取 JSON 对象（容忍代码块围栏和前后废话）。"""
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        text = m.group(1)
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end + 1]
+    return json.loads(text)
+
+
+def chat_json(system: str, user: str, max_tokens: int = 3000,
+              model: str = None) -> dict:
+    """文本调用并解析 JSON。解析失败抛异常。"""
+    content = chat_text(system, user, max_tokens=max_tokens, model=model)
+    return extract_json(content)

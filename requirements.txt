@@ -3,3 +3,5 @@ mss>=9.0
 Pillow>=10.0
 openai>=1.0
 apscheduler>=3.10
+PyYAML>=6.0
+numpy>=1.24

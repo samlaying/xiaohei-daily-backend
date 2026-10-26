@@ -2,7 +2,7 @@
 
 import logging
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 import screenshot
 import ai_client
@@ -28,7 +28,7 @@ def analyze_and_store(images: list[dict]) -> dict:
         return None
 
     img = images[0]
-    now = datetime.now(timezone.utc)
+    now = datetime.now()  # 本地时间 naive ISO，与 DB 查询约定一致
 
     # 抓取前台应用上下文（聚焦 AI 注意力）
     ctx = app_tracker.get_frontmost_context()
@@ -48,6 +48,9 @@ def analyze_and_store(images: list[dict]) -> dict:
     summary = result["summary"]
     category = classifier.classify(summary)
 
+    # 产出物标记：截图分析 prompt 要求在末行输出【产出】…
+    is_deliverable = 1 if "【产出】" in summary else 0
+
     # The record covers the period from last capture to now
     started_at = _last_capture_time or now
     ended_at = now
@@ -57,11 +60,12 @@ def analyze_and_store(images: list[dict]) -> dict:
     rid = db.create_work_record(
         category=category,
         summary=summary,
-        started_at=started_at.isoformat(),
-        ended_at=ended_at.isoformat(),
+        started_at=started_at.isoformat(timespec="seconds"),
+        ended_at=ended_at.isoformat(timespec="seconds"),
         confidence=0.8,
         source="screenshot",
         screenshot_path=img.get("path"),
+        is_deliverable=is_deliverable,
         details=json.dumps({
             "provider": result["provider"],
             "model": result["model"],

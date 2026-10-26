@@ -85,16 +85,14 @@ def _capture_mss() -> list[dict]:
 
 def cleanup_screenshots(keep_days: int = None, max_count: int = None) -> int:
     """
-    清理旧截图文件。
-
-    keep_days: 保留最近 N 天的截图（默认 7 天）
-    max_count: 兜底上限（默认 2000 张）
+    清理旧截图文件（磁盘兜底；报告生成不触发清理，截图统一保留）。
+    keep_days: 保留最近 N 天（默认 config.SCREENSHOT_KEEP_DAYS）
+    max_count: 数量上限（默认 2000 张）
     返回删除的文件数。
     """
     import os
-    from datetime import timedelta
 
-    keep_days = keep_days if keep_days is not None else 7
+    keep_days = keep_days if keep_days is not None else config.SCREENSHOT_KEEP_DAYS
     max_count = max_count if max_count is not None else config.MAX_SCREENSHOTS
     cutoff = time.time() - keep_days * 86400
 

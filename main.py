@@ -24,6 +24,7 @@ import permission_check
 import server
 import collector
 import report
+import memory
 
 # ── Logging ──
 logging.basicConfig(
@@ -90,7 +91,8 @@ def main():
     log.info("=" * 50)
     log.info("日报助手 — Python Backend")
     log.info("=" * 50)
-    log.info("AI Model:   %s", config.AI_MODEL)
+    log.info("AI Vision:  %s", config.AI_VISION_MODEL)
+    log.info("AI Text:    %s", config.AI_TEXT_MODEL)
     log.info("Interval:   %ds", config.SCREENSHOT_INTERVAL_SEC)
     log.info("DB:         %s", config.DB_PATH)
     log.info("HTTP API:   http://%s:%d", config.HTTP_HOST, config.HTTP_PORT)
@@ -100,6 +102,9 @@ def main():
     # Init database
     db.init_db()
     log.info("Database initialized")
+
+    # 首次运行生成 profile 模板（人货场定位）
+    memory.ensure_profile()
 
     # 清理历史壁纸垃圾记录
     _cleanup_wallpaper_records()
@@ -122,15 +127,35 @@ def main():
         coalesce=True,
     )
 
-    # 每天 18:00 自动生成 Markdown 日报
+    # 每天 18:00（北京时间）自动生成日报（读记忆 → 分析 → 生成 → 自检）
     scheduler.add_job(
         lambda: report.generate_and_save(),
         "cron",
         hour=18, minute=0,
+        timezone=config.REPORT_TIMEZONE,
         id="daily_report",
     )
+
+    # 每周五 18:30（北京时间）生成周报（基于 output-log 素材链）
+    scheduler.add_job(
+        lambda: report.generate_weekly_and_save(),
+        "cron",
+        day_of_week="fri", hour=18, minute=30,
+        timezone=config.REPORT_TIMEZONE,
+        id="weekly_report",
+    )
+
+    # 每月最后一天 18:45（北京时间）生成月度复盘
+    scheduler.add_job(
+        lambda: report.generate_monthly_and_save(),
+        "cron",
+        day="last", hour=18, minute=45,
+        timezone=config.REPORT_TIMEZONE,
+        id="monthly_report",
+    )
     scheduler.start()
-    log.info("Scheduler started — capturing every %ds, report daily at 18:00", config.SCREENSHOT_INTERVAL_SEC)
+    log.info("Scheduler started — capturing every %ds; reports (tz=%s): daily 18:00 / weekly Fri 18:30 / monthly last-day 18:45",
+             config.SCREENSHOT_INTERVAL_SEC, config.REPORT_TIMEZONE)
 
     # Run first capture immediately
     log.info("Running initial capture...")

@@ -76,6 +76,20 @@ def index():
 
 ### 7. 手动触发截图分析
 - `POST /api/capture` — 立即截图并分析
+
+### 8. 补录当日素材（关键数据 / 卡点 / 我的判断）
+- `POST /api/daily-input` — body JSON: `{{"keyData": "...", "blocker": "...", "judgment": "..."}}`
+- `GET /api/daily-input?date=YYYY-MM-DD` — 查看已补录内容
+
+### 9. 当日分析结论（生成日报前的分析 pass，可审阅）
+- `GET /api/analysis?date=YYYY-MM-DD` — 读缓存
+- `GET /api/analysis?date=YYYY-MM-DD&force=1` — 强制重跑
+
+### 10. 手动生成报告
+- `POST /api/report/generate` — body JSON: `{{"reportType": "daily|weekly|monthly", "date": "YYYY-MM-DD"}}`
+
+### 11. 人货场配置
+- `GET /api/profile` — 读取 data/profile.yaml 生效配置（编辑文件即可，即时生效）
 """.format(host=config.HTTP_HOST, port=config.HTTP_PORT)
     return doc, 200, {"Content-Type": "text/markdown; charset=utf-8"}
 
@@ -158,6 +172,80 @@ def manual_capture():
     except Exception as e:
         log.error("Manual capture failed: %s", e)
         return err(500, str(e))
+
+
+# ── Daily Inputs（人工补录素材：④关键数据 ⑤卡点+判断）──
+
+@app.route("/api/daily-input", methods=["GET"])
+def get_daily_input():
+    date = request.args.get("date")
+    return ok(db.query_daily_inputs(date))
+
+
+@app.route("/api/daily-input", methods=["POST"])
+def add_daily_input():
+    """补录当日素材。body JSON: {keyData, blocker, judgment, date?}，字段均可选。"""
+    body = request.get_json(silent=True) or {}
+    key_data = (body.get("keyData") or "").strip()
+    blocker = (body.get("blocker") or "").strip()
+    judgment = (body.get("judgment") or "").strip()
+    if not any([key_data, blocker, judgment]):
+        return err(400, "keyData/blocker/judgment 至少填一项")
+    rid = db.add_daily_input(key_data=key_data or None,
+                             blocker=blocker or None,
+                             judgment=judgment or None,
+                             input_date=body.get("date"))
+    return ok({"id": rid})
+
+
+# ── Day Analysis（当日分析结论，可审阅）──
+
+@app.route("/api/analysis", methods=["GET"])
+def get_analysis():
+    import analyzer
+    date = request.args.get("date")
+    force = request.args.get("force") in ("1", "true")
+    if force:
+        try:
+            data = analyzer.analyze_day(date, force=True)
+        except Exception as e:
+            log.error("Analysis failed: %s", e)
+            return err(500, str(e))
+    else:
+        data = analyzer.get_cached(date)
+    return ok(data)
+
+
+# ── Report Generation（手动触发日报/周报/月报）──
+
+@app.route("/api/report/generate", methods=["POST"])
+def generate_report():
+    """body JSON: {reportType: daily|weekly|monthly, date?: YYYY-MM-DD}"""
+    import report
+    body = request.get_json(silent=True) or {}
+    report_type = body.get("reportType", "daily")
+    date = body.get("date")
+    try:
+        if report_type == "weekly":
+            path = report.generate_weekly_and_save(end_date=date)
+        elif report_type == "monthly":
+            path = report.generate_monthly_and_save(month=date)
+        else:
+            path = report.generate_and_save(date=date)
+        if not path:
+            return err(400, "该时段无素材，未生成")
+        return ok({"path": path})
+    except Exception as e:
+        log.error("Report generation failed: %s", e)
+        return err(500, str(e))
+
+
+# ── Profile（人货场定位）──
+
+@app.route("/api/profile", methods=["GET"])
+def get_profile():
+    import memory
+    return ok(memory.load_profile())
 
 
 def start_server():

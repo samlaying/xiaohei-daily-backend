@@ -2,7 +2,7 @@
 
 import subprocess
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 log = logging.getLogger("app_tracker")
 
@@ -55,7 +55,7 @@ def tick():
     """
     global _current_app, _current_start
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now()  # 本地时间 naive ISO，与 DB 查询约定一致
     app = get_frontmost_app()
     sessions = []
 
@@ -80,7 +80,7 @@ def flush():
     global _current_app, _current_start
     sessions = []
     if _current_app and _current_start:
-        now = datetime.now(timezone.utc)
+        now = datetime.now()  # 本地时间 naive ISO，与 DB 查询约定一致
         duration = (now - _current_start).total_seconds()
         if duration > 5:
             sessions.append((

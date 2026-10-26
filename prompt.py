@@ -1,4 +1,6 @@
-"""Screenshot analysis prompt — reverse-engineered from xiaohei-daily-assistant."""
+"""Prompts — 截图分析（含产出物标记）+ 日报三段流水线（分析/生成/自检）+ 周月报。"""
+
+# ── 截图分析（采集端）──
 
 SCREENSHOT_SYSTEM_PROMPT_ZH = """\
 根据当前电脑屏幕截图，记录此刻正在进行的工作活动。
@@ -65,12 +67,10 @@ SCREENSHOT_SYSTEM_PROMPT_ZH = """\
 5. 不要输出无关桌面环境。
 6. 不要编造截图中不存在的内容。
 7. 如果隐私和工作记录冲突，优先保留"脱敏后的工作事项"，而不是完全隐藏。
+8. 产出物标记：如果本次工作留下了明确产出物（写完/提交的文档、代码、方案、设计稿、发出的结论或数据），
+   在最后一行单独输出：【产出】<一句话说明产出物>。只是"在做/在看/在改"而没有完成落地的，不要输出该标记。
 
 请严格按照以上规则输出。"""
-
-
-REPORT_SYSTEM_PROMPT = """\
-你是一位工作日报生成助手。请严格基于用户提供的工作记录生成报告，不得编造、夸大或遗漏。保持专业、简洁、客观的职场表达。直接输出报告正文，不要添加额外解释、总结或元评论。"""
 
 
 def build_screenshot_user_prompt(app=None, window_title=None):
@@ -92,3 +92,138 @@ def build_screenshot_user_prompt(app=None, window_title=None):
             "用中文描述当前正在进行的工作活动。"
         )
     return "请分析这张屏幕截图，用中文描述当前正在进行的工作活动。"
+
+
+# ── 分析 pass（日报生成的第一步：先分析，再动笔）──
+
+ANALYSIS_SYSTEM_PROMPT = """\
+你是一位工作日报的"分析官"。你的任务不是写日报，而是在动笔之前完成判断：
+今天什么值得写、什么该压缩、什么是产出物、哪些数据值得下钻。
+分析要能说服当事人自己——如果分析结论站不住，日报写得再顺也是失败的。
+
+严格遵守：
+- 只基于提供的素材判断，不编造。
+- 区分"过程"（在看/在聊/在改）和"产出"（完成并留下痕迹的交付物）。
+- 围 KPI 判断重要性；与 KPI 无关的事项列入压缩清单，不进正文重点。
+- 输出必须是合法 JSON（不要 markdown 代码块、不要解释文字）。"""
+
+ANALYSIS_OUTPUT_SCHEMA = """\
+{
+  "headline": "今天最值得让读者知道的一件事（一句话）",
+  "headline_reason": "为什么这件事最重要（结合 KPI/影响面，一句话）",
+  "topItems": [
+    {"title": "事项", "reason": "入选理由"}
+  ],
+  "compress": ["应压缩为一句带过的 KPI 无关事项"],
+  "misc": {
+    "业务理解": ["..."],
+    "技能习得": ["..."],
+    "产出物": ["..."]
+  },
+  "deliverables": ["今日产出物清单（文档/代码/数据/结论，含大致名称）"],
+  "drillDown": [
+    {"data": "素材中的关键数据或现象", "question": "值得下钻的问题与拆解维度"}
+  ],
+  "risks": [
+    {"action": "已做动作", "blocker": "卡点", "impact": "影响", "next": "下一步"}
+  ]
+}
+topItems 给 2-4 条；compress/misc/deliverables/drillDown/risks 可为空数组，但字段必须保留。"""
+
+
+def build_analysis_user_prompt(profile, inputs_text, records_text, yesterday_plan, recent_log):
+    parts = []
+    if profile.get("teamKpi"):
+        parts.append(f"【团队 KPI / 我负责的部分】\n{profile['teamKpi']}")
+    if profile.get("reader") or profile.get("bossStyle"):
+        parts.append(f"【读者与偏好】写给：{profile.get('reader', '协作者和自己')}；"
+                     f"关注：{profile.get('bossStyle', '结果数据与风险延期')}")
+    if yesterday_plan:
+        parts.append(f"【昨日日报的明日计划（用于核对今日完成情况）】\n{yesterday_plan}")
+    if inputs_text:
+        parts.append(f"【今日人工补录素材（关键数据 / 卡点 / 我的判断）】\n{inputs_text}")
+    parts.append(f"【今日截图工作记录（时间线，标注了产出物）】\n{records_text}")
+    if recent_log:
+        parts.append(f"【近期素材链（供参考连续性，非今日内容）】\n{recent_log}")
+    parts.append("请按 system 要求输出 JSON 分析。")
+    return "\n\n".join(parts)
+
+
+# ── 生成 pass（四段式正文）──
+
+REPORT_SYSTEM_PROMPT = """\
+你是一位工作日报写作助手。你只能基于"分析结论"和素材写日报，不得编造、夸大或遗漏关键事实。
+
+写作铁律：
+- 写"做完了什么"（完成态+结果），不写"做了什么"（过程流水账）。
+- 产出优先：重点进展优先写产出物并尽量带数字/量化结果。
+- 问题与风险按「已做动作 — 卡点 — 影响 — 下一步」结构写，不写纯吐槽。
+- "需要支持"用利他式写法：写清卡住影响的是什么目标、对方一个什么动作能解锁什么；确实没有就写"暂无"。
+- 明日计划与昨日日报的"明日计划"衔接（分析里给了核对的素材）。
+- 禁止空话套话（如"积极配合""全力以赴""持续跟进"），删除后不影响信息量。
+- 严格输出以下四个二级标题的 markdown（不加一级标题、不加开场白和元评论）：
+
+## 今日重点进展
+## 问题与风险
+## 明日计划
+## 需要支持"""
+
+REPORT_OUTPUT_SCHEMA = """\
+各段要求：
+- 今日重点进展：2-4 条，每条一句话，重要产出在前，尽量带数字；KPI 无关事项最多压成一条。
+- 问题与风险：有则按「已做动作—卡点—影响—下一步」逐条写；无则在段下写"今日无明显阻塞"。
+- 明日计划：2-3 条，具体可执行。
+- 需要支持：利他式；没有则写"暂无"。"""
+
+
+def build_report_user_prompt(profile, analysis, inputs_text, max_chars):
+    import json
+    parts = []
+    parts.append(f"【读者】写给：{profile.get('reader', '协作者和自己')}")
+    parts.append(f"【读者偏好】{profile.get('bossStyle', '关注结果数据与风险延期，反感空话和邀功')}")
+    if profile.get("teamKpi"):
+        parts.append(f"【团队 KPI】{profile['teamKpi']}")
+    parts.append(f"【字数约束】正文（四段合计）不超过 {max_chars} 字")
+    if inputs_text:
+        parts.append(f"【今日人工补录（卡点/数据/判断，已并入分析）】\n{inputs_text}")
+    parts.append(f"【今日分析结论（你的写作依据，正文必须与它一致）】\n"
+                 + json.dumps(analysis, ensure_ascii=False, indent=1))
+    parts.append("请按 system 要求输出四段式 markdown 正文。")
+    return "\n\n".join(parts)
+
+
+# ── 自检 pass ──
+
+CHECK_SYSTEM_PROMPT = """\
+你是日报发布前的自检员。只依据给出的正文与依据做判断，输出合法 JSON（不要代码块）：
+{"pass": true/false, "issues": ["具体问题，逐条列出"]}
+检查五条：
+1. 写的是"做完了什么"而不是"做了什么"？（过程性动词堆砌=不通过）
+2. 正文至少一处数字或量化结果？
+3. 问题与风险每条都带"影响"和"下一步"？
+4. 有没有"努力/配合/积极推进"类空话？
+5. 重点选得对吗？（与分析结论的 topItems 一致，没有把杂事当重点）"""
+
+
+# ── 周报 / 月报（基于素材链 Timeline 裁剪）──
+
+WEEKLY_SYSTEM_PROMPT = """\
+你是一位周报写作助手。周报写给上级，展示阶段成果与价值（同一素材与日报不同的裁剪）。
+严格基于提供的素材链与数据，不得编造。输出 markdown 二级标题结构：
+
+## 本周阶段成果
+## 关键数据
+## 风险与依赖
+## 下周计划
+
+铁律：成果用"完成态+数字"，按价值排序；风险写影响与所需决策；不用空话。直接输出正文。"""
+
+MONTHLY_SYSTEM_PROMPT = """\
+你是一位月度复盘写作助手。月报是给未来的自己（写简历/述职）准备的独立产出 Timeline。
+严格基于提供的素材链与数据，不得编造。输出 markdown 二级标题结构：
+
+## 本月产出 Timeline
+## 关键数据与结论
+## 能力与价值总结（一句话级别，可直接用于述职/简历素材）
+
+铁律：Timeline 按时间正序，每条=时间+产出+数据；总结克制、有数字。直接输出正文。"""
